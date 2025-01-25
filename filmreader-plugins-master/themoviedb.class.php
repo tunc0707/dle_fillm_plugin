@@ -5,145 +5,294 @@
 -----------------------------------------------------
  License : MIT License
 -----------------------------------------------------
- Copyright (c)
------------------------------------------------------
- Date : 08.02.2018 [1.3]
+ Date : 28.09.2018 [2.5]
 =====================================================
 */
 
-if ( !defined( 'E_DEPRECATED' ) ) {
-	@error_reporting ( E_ALL ^ E_WARNING ^ E_NOTICE );
-	@ini_set ( 'error_reporting', E_ALL ^ E_WARNING ^ E_NOTICE );
+if (!defined('E_DEPRECATED')) {
+    @error_reporting(E_ALL ^ E_WARNING ^ E_NOTICE);
+    @ini_set('error_reporting', E_ALL ^ E_WARNING ^ E_NOTICE);
 } else {
-	@error_reporting ( E_ALL ^ E_WARNING ^ E_DEPRECATED ^ E_NOTICE );
-	@ini_set ( 'error_reporting', E_ALL ^ E_WARNING ^ E_DEPRECATED ^ E_NOTICE );
+    @error_reporting(E_ALL ^ E_WARNING ^ E_DEPRECATED ^ E_NOTICE);
+    @ini_set('error_reporting', E_ALL ^ E_WARNING ^ E_DEPRECATED ^ E_NOTICE);
 }
 
-class FilmReader {
+class FilmReader
+{
+    private $config = [
+        'screens' => true,  // Ekran görüntülerini çekme ayarı
+        'screens_count' => 5, // Çekilecek ekran görüntüsü sayısı
+    ];
 
-	public function get( $url ) {
-		$html = str_replace( array( "\r", "\n" ), "", $this->getURLContent( $url ) );
+    private function curlGet($url)
+    {
+        $ch = curl_init();
+        curl_setopt($ch, CURLOPT_URL, $url);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_HEADER, false);
+        curl_setopt($ch, CURLOPT_HTTPHEADER, array("Accept: application/json"));
+        $response = curl_exec($ch);
+        if ($response === false) {
+            error_log("Curl Error: " . curl_error($ch));
+        } else {
+            error_log("Curl Response from $url: " . $response);
+        }
+        curl_close($ch);
+        return json_decode($response, true);
+    }
 
-		$dom = new DOMDocument();
-		@$dom->loadHTML( $html );
-		$x = new DOMXPath( $dom );
-		$meta = "<meta charset=\"utf-8\" />";
+    public function get($url)
+    {
+        include ENGINE_DIR . "/data/mws-film.conf.php";
+        $tmdbApiKey = $mws_film['tmdb_api_key']; // TMDB API anahtarını ayar dosyasından al
+        $omdbApiKey = $mws_film['omdb_api_key']; // OMDb API anahtarını ayar dosyasından al
 
-		$film = array();
-		$film['url'] = $url;
+        error_log("TMDB API Key: " . $tmdbApiKey);
+        error_log("OMDb API Key: " . $omdbApiKey);
 
-		$_tmp = $this->cleanWords( $x->query('//img[@class="poster"]')->item(0)->getAttribute('srcset') );
-		$_tmp = explode( " ", $_tmp );
-		$film['img'] = $_tmp[0];
-		if ( count( $_tmp ) > 2 ) {
-			$film['orgimg'] = $_tmp[2];
-		}
+        if (preg_match('#themoviedb.org/movie/(\\d+)($|-)#i', $url, $aMatch)) {
+            $id = $aMatch[1];
+        } else {
+            error_log("TMDB ID bulunamadı.");
+            return;
+        }
 
-		//$film['name'] = $this->cleanWords( $x->query('//div[@class="title"]/h2/a')->item(0)->nodeValue );
-		$film['name'] = $this->cleanWords( $x->query('//meta[@property="og:title"]')->item(0)->getAttribute('content') );
+        error_log("TMDB ID: " . $id);
 
-		$film['year'] = trim( $this->cleanWords( $x->query('//span[@class="release_date"]')->item(0)->nodeValue ), "()" );
+        // TMDb API'den veriyi çek
+        $tmdbUrl = "http://api.themoviedb.org/3/movie/" . $id . "?language=en-null&append_to_response=videos&api_key=" . $tmdbApiKey;
+        $movie = $this->curlGet($tmdbUrl);
+        error_log("TMDB Data: " . print_r($movie, true));
 
-		$film['story'] = $this->cleanWords( $x->query('//div[@class="overview"]/p')->item(0)->nodeValue );
+        $tmdbUrlTr = "http://api.themoviedb.org/3/movie/" . $id . "?language=tr-TR&append_to_response=credits,releases,images&include_image_language=en,null&api_key=" . $tmdbApiKey;
+        $data = $this->curlGet($tmdbUrlTr);
+        error_log("TMDB Data (TR): " . print_r($data, true));
 
-		$_tmp = array();
-		foreach( $x->query('//li[@class="profile"]') as $node ) {
-			$_li = $dom->saveHTML( $node );
-			$_li_h = "<!DOCTYPE html><html><head>" . $meta . "</head><body>" . $_li . "</body></html>";
-			$dom2 = new DOMDocument(); @$dom2->loadHTML( $_li_h ); $y = new DOMXPath( $dom2 );
-			$p1 = $this->cleanWords( $y->query('//p[1]/a')->item(0)->nodeValue );
-			$p2 = $this->cleanWords( $y->query('//p[2]')->item(0)->nodeValue );
-			if ( strpos( $p2, "," ) !== false ) {
-				$_tmp2 = explode( ",", $p2 );
-				foreach ( $_tmp2 as $key ) {
-					$_tmp[ trim( $key ) ][] = $p1;
-				}
-			} else {
-				$_tmp[ $p2 ][] = $p1;
-			}
-		}
+        if (!isset($data['imdb_id'])) {
+            error_log("IMDb ID bulunamadı, OMDb verisi çekilemedi.");
+            return;
+        }
 
-		$film['director'] = implode( ",", $_tmp['Director'] );
-		$film['writers'] = implode( ",", $_tmp['Story'] );
-		$film['actors'] = implode( ",", $_tmp['Characters'] );
+        $imdb_id = $data['imdb_id'];
 
-		$_tmp = array();
-		foreach( $x->query('//ol[@class="people scroller"]/li/p/a[contains(@href,"/person/")]') as $node ) {
-			//$_li = $dom->saveHTML( $node );
-			//$_li_h = "<!DOCTYPE html><html><head>" . $meta . "</head><body>" . $_li . "</body></html>";
-			//$dom2 = new DOMDocument(); @$dom2->loadHTML( $_li_h ); $y = new DOMXPath( $dom2 );
-			//$p1 = $this->cleanWords( $y->query('//p[1]/a')->item(0)->nodeValue );
-			$_tmp[] = $this->cleanWords( $node->nodeValue );
-		}
-		$film['actors'] = implode( ",", $_tmp );
+        // IMDb ID'yi kullanarak OMDb API'den veriyi çek
+        if (!empty($imdb_id)) {
+            $omdbUrl = "http://www.omdbapi.com/?i=" . $imdb_id . "&apikey=" . $omdbApiKey;
+            $response = file_get_contents($omdbUrl);
+            $omdbData = json_decode($response, true);
+            if (empty($omdbData) || isset($omdbData['Error'])) {
+                error_log("OMDb API Error: " . print_r($omdbData, true));
+                $imdbRating = '';
+                $rottenTomatoesRating = '';
+                $metacriticRating = '';
+                $imdbVotes = '';
+            } else {
+                error_log("OMDb Data: " . print_r($omdbData, true)); // OMDb yanıtını kontrol edin
+                $imdbRating = isset($omdbData['imdbRating']) ? $omdbData['imdbRating'] : '';
+                $rottenTomatoesRating = '';
+                $metacriticRating = '';
+                $imdbVotes = isset($omdbData['imdbVotes']) ? $omdbData['imdbVotes'] : '';
+                if (isset($omdbData['Ratings']) && is_array($omdbData['Ratings'])) {
+                    foreach ($omdbData['Ratings'] as $rating) {
+                        if ($rating['Source'] === 'Rotten Tomatoes') {
+                            $rottenTomatoesRating = $rating['Value'];
+                        } elseif ($rating['Source'] === 'Metacritic') {
+                            $metacriticRating = $rating['Value'];
+                        }
+                    }
+                }
+            }
+        } else {
+            error_log("IMDb ID bulunamadı, OMDb verisi çekilemedi.");
+            $imdbRating = '';
+            $rottenTomatoesRating = '';
+            $metacriticRating = '';
+            $imdbVotes = '';
+        }
 
-		preg_match_all( "#<p><strong><bdi>(.+?)</bdi></strong>(.+?)</p>#is", $html, $matches );
-		$_tmp = array_combine( $matches[1], $matches[2] );
+        $ret['rating'] = isset($data['vote_average']) ? round($data['vote_average'], 1) : '';
+        $imdb_url = "https://www.imdb.com/title/" . $imdb_id;
+        $year = substr($data['release_date'], 0, 4);
+        $tmdbid = $data['id'];
+        $title = $data['original_title'];
+        $description = $data['overview'];
+        $status = $data['status'];
+        $homepage = $data['homepage'];
+        $releasen = date("d.m.Y", strtotime($data['release_date']));
+        $runtime = isset($movie['runtime']) ? $movie['runtime'] . " dk." : "N/A";
+        $ltitle = $data['title'];
+        $vote = implode(', ', $ret);
+        $tagline = $data['tagline'];
+        setlocale(LC_MONETARY, "en_US");
+        $budget = number_format($data['budget']) . " \$";
+        $revenue = number_format($data['revenue']) . " \$";
 
-		$film['status'] = $this->cleanWords( $_tmp['Status'] );
-		$film['runtime'] = $this->cleanWords( $_tmp['Runtime'] );
-		$film['budget'] = $this->cleanWords( $_tmp['Budget'] );
-		$film['language'] = $this->cleanWords( $_tmp['Original Language'] );
+        if ($data['poster_path'] != null) {
+            $images_small = 'https://image.tmdb.org/t/p/w185' . $data['poster_path'];
+        } elseif ($data['backdrop_path'] != null) {
+            $images_small = 'https://image.tmdb.org/t/p/w185' . $data['backdrop_path'];
+        } else {
+            $images_small = '/img/no-backdrop.png';
+        }
 
-		$_tmp = array();
-		foreach( $x->query('//li/a[contains(@href,"/genre/")]') as $node ) {
-			$_tmp[] = $this->cleanWords( $node->nodeValue );
-		}
-		$film['genres'] = implode( ",", $_tmp );
+        if ($data['backdrop_path'] != null) {
+            $big_images = 'https://image.tmdb.org/t/p/original' . $data['backdrop_path'];
+        } elseif ($data['backdrop_path'] != null) {
+            $big_images = 'https://image.tmdb.org/t/p/original' . $data['backdrop_path'];
+        } else {
+            $big_images = '/img/no-backdrop.png';
+        }
 
-		$_tmp = $x->query('//section[@class="facts left_column"]/ul/li')->item(0);
-		$_li = $dom->saveHTML( $_tmp );
-		preg_match( "#\"\>\s*(.+?)\<br\>\<#is", $_li, $matches );
-		$film['datelocal'] = $this->cleanWords(  $matches[1] );
+        $genre = '';
+        if (is_array($data['genres'])) {
+            foreach ($data['genres'] as $result) {
+                $genre .= $result['name'] . ', ';
+            }
+            $genre = rtrim($genre, ', ');
+        }
 
-		//$film['ratinga'] = $this->cleanWords( $x->query('//span[@class="rating"]')->item(0)->nodeValue );
-		$film['ratinga'] = $this->cleanWords( $x->query('//div[@class="user_score_chart"]')->item(0)->getAttribute('data-percent') );
-		$film['ratingb'] = "100";
-		$film['ratingc'] = "";
-		$film['productionfirm'] = "";
+        $languages = '';
+        if (is_array($data['spoken_languages'])) {
+            foreach ($data['spoken_languages'] as $result) {
+                $languages .= $result['name'] . ', ';
+            }
+            $languages = rtrim($languages, ', ');
+        }
 
-		if ( preg_match( "#src=\"/static_cache/flags_v2/24/([A-Z]+)-[0-9A-Z]{64}\.(png|jpg)\"#is", $html, $matches ) ) {
-			$film['country'] = $matches[1];
-		}
+        $companies = '';
+        if (is_array($data['production_companies'])) {
+            foreach ($data['production_companies'] as $result) {
+                $companies .= $result['name'] . ', ';
+            }
+            $companies = rtrim($companies, ', ');
+        }
 
-		return $film;
-	}
+        $country = '';
+        if (is_array($data['production_countries'])) {
+            foreach ($data['production_countries'] as $result) {
+                $country .= $result['name'] . ', ';
+            }
+            $country = rtrim($country, ', ');
+        }
 
-	private function cleanWords( $text ) {
-		$text = str_replace( array( "\t", "  ", " -", "\r\n", "\n" ), "", $text );
-		return trim( $text );
-	}
+        $youtubes = '';
+        if (is_array($data['videos']['results'])) {
+            foreach ($data['videos']['results'] as $result) {
+                $youtubes = "https://www.youtube.com/embed/" . $result['key'];
+            }
+        }
 
-	private function getURLContent($url) {
-		if ( function_exists('curl_exec') ) {
-			$ch = curl_init( $url );
-			curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-			curl_setopt($ch, CURLOPT_HEADER, false);
-			curl_setopt($ch, CURLOPT_ENCODING, "");
-			curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 120);
-			curl_setopt($ch, CURLOPT_TIMEOUT, 120);
-			curl_setopt($ch, CURLOPT_MAXREDIRS, 2);
-			$output  = curl_exec( $ch );
-			curl_close( $ch );
-		} else {
-			$output = file_get_contents($url);
-		}
-		return $output;
-	}
+        $imgs = [];
+        if (is_array($data['images']['backdrops'])) {
+            foreach ($data['images']['backdrops'] as $result) {
+                $imgs[] = '[img]https://image.tmdb.org/t/p/original' . $result['file_path'] . '[/img]';
+            }
+        }
+        $filmm = array_slice($imgs, 0, $this->config['screens_count']);
+
+        $imge = '';
+        if (is_array($filmm)) {
+            foreach ($filmm as $result) {
+                $imge .= $result . '</br>';
+            }
+        }
+
+        $youtube = [];
+        if (is_array($movie['videos']['results'])) {
+            foreach ($movie['videos']['results'] as $result) {
+                $youtube[] = '<option value="https://www.youtube.com/embed/' . $result['key'] . '">' . $result['name'] . '</option>';
+            }
+        }
+        $type = implode('', $youtube);
+
+        $cast = isset($data['credits']['cast']) ? $data['credits']['cast'] : [];
+        $actors = [];
+        $count = 0;
+        foreach ($cast as $cast_member) {
+            $actors[] = $cast_member['name'];
+            $count++;
+            if ($count == 8)
+                break;
+        }
+        $actors = implode(", ", $actors);
+
+        $screenman = '';
+        if (isset($data['credits']['crew'])) {
+            foreach ($data['credits']['crew'] as $crew) {
+                if ($crew['job'] == 'Screenplay') {
+                    $screenman = $crew['name'];
+                }
+            }
+        }
+
+        $writer = '';
+        if (isset($data['credits']['crew'])) {
+            foreach ($data['credits']['crew'] as $crew) {
+                if ($crew['job'] == 'Writer') {
+                    $writer = $crew['name'];
+                }
+            }
+        }
+
+        $crewMember = '';
+        if (isset($data['credits']['crew'])) {
+            foreach ($data['credits']['crew'] as $crew) {
+                if ($crew['job'] == 'Director') {
+                    $crewMember = $crew['name'];
+                }
+            }
+        }
+
+        $mpaa_rating = '';
+        $age_rating = '';
+        $releases = isset($data['releases']['countries']) ? $data['releases']['countries'] : [];
+        foreach ($releases as $release_item) {
+            if ($release_item['iso_3166_1'] === 'US')
+                $mpaa_rating = $release_item['certification'];
+            if ($release_item['iso_3166_1'] === 'DE')
+                $age_rating = $release_item['certification'];
+        }
+
+        $film = array(
+            'tmdb_id' => $data['id'],
+            'cover' => $images_small,
+            'namelong' => $title,
+            'name' => $ltitle,
+            'age' => $age_rating,
+            'year' => $year,
+            'url' => $url,
+            'aspect' => $imdb_url,
+            'type' => $type,
+            'soundtracks' => $homepage,
+            'sound' => $data['status'],
+            'genres' => $genre,
+            'runtime' => $runtime,
+            'ratinga' => $vote,
+            'ratingb' => $mpaa_rating,
+            'ratingc' => $data['vote_count'],
+            'actors' => $actors,
+            'writers' => $writer,
+            'screenman' => $screenman,
+            'director' => $crewMember,
+            'story' => $description,
+            'country' => $country,
+            'language' => $languages,
+            'datelocal' => $releasen,
+            'color' => $revenue,
+            'budget' => $budget,
+            'locations' => $big_images,
+            'namelocal' => $title,
+            'tagline' => $tagline,
+            'productionfirm' => $companies,
+            'imdb_rating' => $imdbRating,
+            'rotten_tomatoes_rating' => $rottenTomatoesRating,
+            'metacritic_rating' => $metacriticRating,
+            'imdb_votes' => $imdbVotes,
+			'backdrops' => $imge,
+			'trailers' => $type,
+       );
+
+        return $film;
+    }
 }
-
-@header( "Content-type: text/html; charset=utf-8" );
-
-/*
-$f = new FilmReader();
-echo "<pre>";
-print_r( $f->get( "https://www.themoviedb.org/movie/336843-the-maze-runner-the-death-cure" ) );
-print_r( $f->get( "https://www.themoviedb.org/movie/346672-underworld-blood-wars" ) );
-print_r( $f->get( "https://www.themoviedb.org/movie/168259-furious-7" ) );
-print_r( $f->get( "https://www.themoviedb.org/movie/107846-escape-plan" ) );
-print_r( $f->get( "https://www.themoviedb.org/movie/238-the-godfather" ) );
-print_r( $f->get( "https://www.themoviedb.org/movie/278-the-shawshank-redemption" ) );
-echo "</pre>";
-*/
-
 ?>
